@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import FinancialCharts from '@/components/financialCharts';
 
 interface CompanyData {
   company_name: string;
@@ -20,6 +21,7 @@ interface CompanyData {
   };
   officers: Officer[];
   filing_history: FilingHistoryItem[];
+  financial_data: FinancialData[];
 }
 
 interface Officer {
@@ -32,6 +34,17 @@ interface FilingHistoryItem {
   date: string;
   type: string;
   description: string;
+  links?: {
+    document_metadata?: string;
+  };
+}
+
+interface FinancialData {
+  year: number;
+  revenue: number;
+  profit: number;
+  assets: number;
+  liabilities: number;
 }
 
 type SearchType = 'companies' | 'officers' | 'disqualified-officers';
@@ -44,21 +57,88 @@ const CompanySearch: React.FC = () => {
   const [activeTab, setActiveTab] = useState<string>('profile');
   const [searchType, setSearchType] = useState<SearchType>('companies');
 
-  const handleSearch = async (): Promise<void> => {
+  const handleSearch = async () => {
+    if (!query) return;
+
     setLoading(true);
     setError(null);
+
     try {
-      const response = await fetch(`/api/company-search?q=${encodeURIComponent(query)}&type=${searchType}`);
-      if (!response.ok) {
-        throw new Error('Failed to fetch company data');
-      }
-      const data: CompanyData = await response.json();
-      setCompanyData(data);
+      const response = await fetchWithRetry(`/api/company-search?q=${encodeURIComponent(query)}&type=${searchType}`, 3);
+      const financialData = await processFilingHistory(response.filing_history);
+      setCompanyData({ ...response, financial_data: financialData });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An unknown error occurred');
+      if (err instanceof Error) {
+        if (err.message.includes('Max retries reached')) {
+          setError('Failed to retrieve company data after multiple attempts. Please try again later.');
+        } else if (err.message.includes('timed out')) {
+          setError('The request timed out. Please check your internet connection and try again.');
+        } else {
+          setError(`An error occurred: ${err.message}. Please try again.`);
+        }
+      } else {
+        setError('An unknown error occurred. Please try again.');
+      }
     } finally {
       setLoading(false);
     }
+  };
+
+  // Fetch with retry logic
+  async function fetchWithRetry(url: string, retries: number = 3): Promise<any> {
+    let attempt = 0;
+    while (attempt < retries) {
+      try {
+        const response = await fetchCompanyData(url);
+        return response;
+      } catch (error) {
+        attempt++;
+        if (attempt >= retries) {
+          throw new Error('Max retries reached. Unable to fetch data.');
+        }
+        console.warn(`Retrying... (${attempt}/${retries})`);
+      }
+    }
+  }
+
+  async function fetchCompanyData(url: string) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+  
+    try {
+      const response = await fetch(url, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch data: ${response.status} ${response.statusText}`);
+      }
+      return response.json();
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error('Request timed out');
+      }
+      throw error;
+    }
+  }
+
+  const processFilingHistory = async (filingHistory: FilingHistoryItem[]): Promise<FinancialData[]> => {
+    const financialData: FinancialData[] = [];
+    const pdfPromises = filingHistory
+      .filter(item => item.links?.document_metadata)
+      .map(async (item) => {
+        try {
+          const response = await fetch(`/api/process-pdf?url=${encodeURIComponent(item.links!.document_metadata!)}`);
+          if (!response.ok) {
+            throw new Error('Failed to process PDF');
+          }
+          const data: FinancialData = await response.json();
+          financialData.push(data);
+        } catch (error) {
+          console.error('Error processing PDF:', error);
+        }
+      });
+
+    await Promise.all(pdfPromises);
+    return financialData.sort((a, b) => a.year - b.year);
   };
 
   const renderCompanyProfile = (): JSX.Element => (
@@ -104,6 +184,11 @@ const CompanySearch: React.FC = () => {
             <p><strong>Date:</strong> {filing.date}</p>
             <p><strong>Type:</strong> {filing.type}</p>
             <p><strong>Description:</strong> {filing.description}</p>
+            {filing.links?.document_metadata && (
+              <a href={filing.links.document_metadata} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+                Download PDF
+              </a>
+            )}
           </div>
         ))}
       </CardContent>
@@ -143,10 +228,18 @@ const CompanySearch: React.FC = () => {
             <TabsTrigger value="profile">Company Profile</TabsTrigger>
             <TabsTrigger value="officers">Officers</TabsTrigger>
             <TabsTrigger value="filing">Filing History</TabsTrigger>
+            <TabsTrigger value="financial">Financial Data</TabsTrigger>
           </TabsList>
           <TabsContent value="profile">{renderCompanyProfile()}</TabsContent>
           <TabsContent value="officers">{renderOfficers()}</TabsContent>
           <TabsContent value="filing">{renderFilingHistory()}</TabsContent>
+          <TabsContent value="financial">
+            {companyData.financial_data && companyData.financial_data.length > 0 ? (
+              <FinancialCharts data={companyData.financial_data} />
+            ) : (
+              <p>No financial data available.</p>
+            )}
+          </TabsContent>
         </Tabs>
       )}
     </div>
