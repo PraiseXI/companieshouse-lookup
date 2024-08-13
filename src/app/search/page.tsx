@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import FinancialCharts from '@/components/financialCharts';
 
 interface CompanyData {
   company_name: string;
@@ -40,11 +39,12 @@ interface FilingHistoryItem {
 }
 
 interface FinancialData {
-  year: number;
-  revenue: number;
-  profit: number;
-  assets: number;
-  liabilities: number;
+  year?: number;
+  revenue?: number;
+  profit?: number;
+  assets?: number;
+  liabilities?: number;
+  rawText: string;
 }
 
 type SearchType = 'companies' | 'officers' | 'disqualified-officers';
@@ -122,11 +122,10 @@ const CompanySearch: React.FC = () => {
 
   const processFilingHistory = async (filingHistory: FilingHistoryItem[]): Promise<FinancialData[]> => {
     const financialData: FinancialData[] = [];
-    const pdfPromises = filingHistory
-      .filter(item => item.links?.document_metadata)
-      .map(async (item) => {
+    for (const item of filingHistory) {
+      if (item.links?.document_metadata) {
         try {
-          const response = await fetch(`/api/process-pdf?url=${encodeURIComponent(item.links!.document_metadata!)}`);
+          const response = await fetch(`/api/process-pdf?url=${encodeURIComponent(item.links.document_metadata)}`);
           if (!response.ok) {
             throw new Error('Failed to process PDF');
           }
@@ -135,10 +134,9 @@ const CompanySearch: React.FC = () => {
         } catch (error) {
           console.error('Error processing PDF:', error);
         }
-      });
-
-    await Promise.all(pdfPromises);
-    return financialData.sort((a, b) => a.year - b.year);
+      }
+    }
+    return financialData.sort((a, b) => (a.year ?? 0) - (b.year ?? 0));
   };
 
   const renderCompanyProfile = (): JSX.Element => (
@@ -184,13 +182,19 @@ const CompanySearch: React.FC = () => {
             <p><strong>Date:</strong> {filing.date}</p>
             <p><strong>Type:</strong> {filing.type}</p>
             <p><strong>Description:</strong> {filing.description}</p>
-            {filing.links?.document_metadata && (
-              <a href={filing.links.document_metadata} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
-                Download PDF
-              </a>
-            )}
           </div>
         ))}
+      </CardContent>
+    </Card>
+  );
+
+  const renderFinancialData = (): JSX.Element => (
+    <Card>
+      <CardHeader>
+        <CardTitle>Financial Data</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <p className="text-lg font-semibold">Coming Soon</p>
       </CardContent>
     </Card>
   );
@@ -233,13 +237,7 @@ const CompanySearch: React.FC = () => {
           <TabsContent value="profile">{renderCompanyProfile()}</TabsContent>
           <TabsContent value="officers">{renderOfficers()}</TabsContent>
           <TabsContent value="filing">{renderFilingHistory()}</TabsContent>
-          <TabsContent value="financial">
-            {companyData.financial_data && companyData.financial_data.length > 0 ? (
-              <FinancialCharts data={companyData.financial_data} />
-            ) : (
-              <p>No financial data available.</p>
-            )}
-          </TabsContent>
+          <TabsContent value="financial">{renderFinancialData()}</TabsContent>
         </Tabs>
       )}
     </div>
